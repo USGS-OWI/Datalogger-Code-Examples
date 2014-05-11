@@ -1,0 +1,276 @@
+'Function file for Mendota Profiler 
+
+Public continueWaiting As Boolean
+Public readyStr As String * 1
+Public tmpStr As String * 12
+Public tmpLong As Long
+Public tmpFloat As Float
+Public absLocInSteps As Long
+Public iters As Long
+Public battLow As Boolean
+Public allOk As Boolean
+Public startupLow As Boolean
+Public excessiveCorrection As Boolean
+Public lastError As String * 40
+
+'This is the original location, where the user starts the sonde
+' and where the controller thinks the '0' position is 
+Public startDepth As Float = 2
+Public bottomDepth As Float = 18
+Public depths(15) As Float = {2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}
+Public numDepths As Long = 15
+Public dwellInMin As Float = 7
+Public finalWaitInMin As Float = 15
+Public profDuration As Float
+Public posIndex As Long = -1' -1 indicates manual mode, which is always our startup condition
+Public lastIndex As Long
+Public lastCorrection As Float = 0
+
+
+
+'Defines "up" direction for controller
+Const UP = 1 'Whatever CCW is on controller
+'Defines "down" direction for controller
+Const DOWN = 0 'CW on controller
+'How many steps we have to send driver per revolution.
+Const STEPS_PER_REV = 2000
+'Distance in Meters traveled per motor revolution
+' one full drum rotation travel distance divided by gear reduction ratio.
+Const DIST_PER_REV = 0.6356/8
+Const CRLF = CHR(13) + CHR(10)
+
+'Startup, check, and prep profiler to start running
+Function startupProfiler()
+  
+  'instantiate the condition booleans
+  allOk = true
+  battLow = false
+  startupLow = false
+  excessiveCorrection = false
+  
+  Battery (logger_batt)
+  
+  
+  If(logger_batt < 12)Then
+    battLow = true
+    startupLow = true
+    lastError = "Low startup battery voltage (<12.1)"
+  EndIf
+  
+  profDuration = dwellInMin * numDepths + finalWaitInMin
+  tmpStr = ""
+  SerialOpen (COMRS232,9600,0,0,12)
+  Delay(1,100,mSec)
+  SerialOut (COMRS232,"@0VZ" & CRLF,"",0,0)
+  Delay(1,10,mSec)
+  SerialInBlock (COMRS232,tmpStr,12)
+  SerialFlush(COMRS232)
+  
+  'If the response is empty, this is bad.
+  If(StrComp("",Trim(tmpStr))=0)Then
+    allOk = false
+    lastError = "No response from from controller (@0VZ)"
+  EndIf
+  absLocInSteps = Trim(tmpStr)
+  
+  'I'm going to check a few more things, make sure it responds ok.
+  tmpStr = ""
+  Delay(1,100,mSec)
+  SerialOut (COMRS232,"@0$" & CRLF,"",0,0)
+  Delay(1,10,mSec)
+  SerialInBlock (COMRS232,tmpStr,12)
+  SerialFlush(COMRS232)
+  
+  'The controller should return from the $ query with its version number
+  If(NOT StrComp("V2.02",Trim(tmpStr))=0)Then
+    allOk = false
+    lastError = "No or improper version response."
+  EndIf
+  
+  'Check that the controller isn't in an error state.
+  tmpStr = ""
+  Delay(1,100,mSec)
+  SerialOut (COMRS232,"@0!" & CRLF,"",0,0)
+  Delay(1,10,mSec)
+  SerialInBlock (COMRS232,tmpStr,12)
+  SerialFlush(COMRS232)
+  
+  'It should also *not* be in an error state. 
+  If(NOT StrComp("0",Trim(tmpStr))=0)Then
+    allOk = false
+    lastError = "Controller in error state:" & tmpStr
+  EndIf
+  
+  'Send Max speed info (3000 step/sec right now, roughly 10cm/sec)
+  Delay(1,100,mSec)
+  SerialOut(COMRS232,"@0M3000" & CRLF,"",0,0)
+  Delay(1,10,mSec)
+  
+  'Send Acceleration info. 58 right now, seems rather arbitrary though. 
+  tmpStr = ""
+  SerialOut (COMRS232,"@0A58" & CRLF,"",0,0)
+  Delay(1,10,mSec)
+  SerialFlush(COMRS232)
+  
+  SerialClose(COMRS232)
+  
+EndFunction
+
+'This toggles between low power status and not.
+'If we just set a threshold (i.e., 12.1), then it will constantly toggle back and
+' forth (motor on, less than 12.1, motor off, greater than 12.1, etc)
+Function isBattLow() As Boolean
+  Battery (logger_batt)
+  If(logger_batt < 11.9)Then
+    battLow = true
+  EndIf
+  
+  If(logger_batt < 11.6) Then
+    startupLow = true  
+  EndIf
+    
+  
+  If(logger_batt >12.2)Then
+    battLow = false
+  EndIf
+  
+  Return battLow
+EndFunction
+
+
+Function moveToDepth(depth) As Boolean
+  
+  SerialOpen (COMRS232,9600,0,0,50)
+  
+  'I'm going to round down, should only be off by max
+  '  1/2000th of a rotation, nothing really
+  tmpLong = Floor((depth-startDepth)*STEPS_PER_REV/DIST_PER_REV)
+  
+  'Negative number means go up, positive means go down.
+  tmpLong = tmpLong - absLocInSteps
+  If(tmpLong > 0) 'Positive, move downwards
+    'Moving down, set max speed higher, down is easier
+    SerialOut(COMRS232,"@0M3000" & CRLF,"",0,0)
+    Delay(1,10,mSec)
+    SerialOut (COMRS232,"@0+" & CRLF,"",0,0)
+    Delay (1,10,mSec)
+    
+  ElseIf(tmpLong < 0) 'Negative, move upwards
+    'Moving up, leave this in place, but set max speed same, shouldn't be a problem
+    SerialOut(COMRS232,"@0M3000" & CRLF,"",0,0)
+    Delay(1,10,mSec)
+    SerialOut (COMRS232,"@0-" & CRLF,"",0,0)
+    Delay (1,10,mSec)
+  Else'Zero means we're at the right depth already, make no move
+    'do nothing, we're already there
+    SerialClose(COMRS232)
+    Return true
+  EndIf
+  
+  
+  SerialOut (COMRS232,"@0N" & ABS(tmpLong) & CRLF,"",0,0)
+  Delay(1,1,Sec)
+  SerialOut (COMRS232,"@0G" & CRLF,"",0,0)
+  Delay (1,30,mSec)
+'''''''''''''''''''''Wait until movement is done'''''''''''''''''''''''''''''''''''
+  continueWaiting = true
+  readyStr = ""
+    
+  iters = 0
+  While(continueWaiting)
+    Delay (1,100,mSec)
+    SerialOut (COMRS232,"@0VF" & CRLF,"",0,0)
+    SerialInBlock (COMRS232,readyStr,1)
+    'If it returns a zero, it is no longer busy and StrComp returns 0, which means false
+    ' Which means don't continue waiting
+    continueWaiting = StrComp (readyStr,"0")
+    iters = iters + 1
+  Wend
+
+  'Movement is done, close port and leave
+  SerialClose(ComRS232)
+  
+  'Update the internal 
+  absLocInSteps = absLocINSteps + tmpLong
+  
+  Return true 'Everything went well
+EndFunction
+
+'Update internal pointer to represent supplied depth
+Function resetPointerPos(depth)
+  tmpLong = Floor((depth-startDepth)*STEPS_PER_REV/DIST_PER_REV)
+  
+  
+  Delay(1,10,mSec)
+  SerialOpen (COMRS232,9600,0,0,50)
+  Delay(1,10,mSec)
+  SerialOut (COMRS232,"@0Z" & tmpLong & CRLF,"",0,0)
+  Delay(1,100,mSec)
+  
+  SerialFlush(COMRS232)
+  'Now verify that the change was made properly
+  SerialOut (COMRS232,"@0VZ" & CRLF,"",0,0)
+  Delay(1,10,mSec)
+  SerialInBlock (COMRS232,tmpStr,12)
+  SerialClose(ComRS232)
+  Delay(1,10,mSec)
+  
+  'If the response is empty, this is bad.
+  If(StrComp("",Trim(tmpStr))=0)Then
+    allOk = false
+  EndIf
+  tmpLong = Trim(tmpStr)
+  
+  'Now reset the logger's version of the pointer
+  absLocInSteps = tmpLong
+  
+EndFunction
+
+'Calculates and moves the profiler to the proper depth based on time
+Function nextMove()
+  'If everything isn't ok, do *not* move or do anything
+  If(NOT allOk OR startupLow OR isBattLow())Then
+    Return false
+  EndIf
+  
+
+  tmpLong = Status.TimeStamp(4,1)
+  tmpLong = tmpLong/60
+  
+  Dim minIn As Long
+  minIn = tmpLong MOD profDuration
+  
+  If((numDepths*dwellInMin) <= minIn)
+    posIndex = 1
+    moveToDepth(depths(posIndex))
+    
+  Else
+    'This is the running average of the pointer to make sure we've been here a while
+    AvgRun(tmpFloat,1,posIndex,3)
+    'Store the last Index
+    lastIndex = posIndex
+    'This is the position we should be at now based on timestamp
+    posIndex = Floor(minIn/dwellInMin)+1
+    
+    
+    'This means we're at a transition point.
+    If(lastIndex <> posIndex AND lastIndex = tmpFloat AND waterTemp > -9999)Then
+      lastCorrection = depthErr
+      'Reset the internal pointer to represent the actual depth sonde is at
+      resetPointerPos(ysiDepth)
+    EndIf
+        
+     'This executes the move
+     moveToDepth(depths(posIndex))
+  EndIf
+EndFunction
+
+'Returns the current depth we should be at
+Function getExpectedDepth()As Float
+  If(posIndex = -1)
+    Return startDepth
+  Else
+    Return depths(posIndex)
+  EndIf
+    
+EndFunction

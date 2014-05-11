@@ -1,0 +1,88 @@
+'CR1000 Series Datalogger
+'This is the Mendota Profiler Program. 
+'date: 05/01/2010
+'program author: Luke Winslow
+
+'Declare Public Variables
+Public PTemp, logger_batt, expectedDepth
+
+
+Public manualMode As Boolean
+Public manualMove As Float 'positive is deeper, negative is shallower
+Public manualMoveTmp As Float
+Public ysi(11) As Float
+Public depthErr As Float
+
+'Define Aliases
+Alias ysi(1),ysi(2),ysi(3),ysi(4),ysi(5),ysi(6) = waterTemp,specConductivity,ysiPsi,ysiDepth,pH,ORP
+Alias ysi(7),ysi(8),ysi(9),ysi(10),ysi(11) = turbidity,chlorophyll,phycocyanin,DOSaturation,DOConcentration
+
+
+'Define Data Tables
+DataTable (OneMin,1,1000)
+  DataInterval (0,1, Min,10)
+  Minimum (1,logger_batt,FP2,0,False)
+  Sample(1,waterTemp,IEEE4)
+  Sample(1,ysiDepth,IEEE4)
+  Sample(1,specConductivity,IEEE4)
+  Sample(1,ysiPsi,IEEE4)
+  Sample(1,pH,IEEE4)
+  Sample(1,ORP,IEEE4)
+  Sample(1,turbidity,IEEE4)
+  Sample(1,chlorophyll,IEEE4)
+  Sample(1,DOConcentration,IEEE4)
+  Sample(1,phycocyanin,IEEE4)
+  Sample(1,DOSaturation,IEEE4)
+  Sample(1,expectedDepth,FP2)
+  Sample(1,lastCorrection,IEEE4)
+EndTable
+
+'Define Subroutines
+
+Include("CPU:Functions.CR1")
+
+'Main Program,
+BeginProg
+  manualMode = true
+  manualMove = 0
+  startupProfiler()
+  depthErr = 0 'Prime this with a zero
+  
+  Scan (1,Min,0,0)
+    Battery (logger_batt)
+    expectedDepth = getExpectedDepth()
+    
+    SDI12Recorder (ysi,1,9,"M!",1.0,0)
+    depthErr = expectedDepth - ysiDepth
+    
+    'Handle manual mode issues. 
+    If(NOT manualMode)Then
+      nextMove()
+    Else'in manual mode
+      posIndex = -1 'Indicate we're not at a position in the position array
+      moveToDepth(startDepth)
+      
+      If(manualMove <> 0)Then
+        'move to the "new" zero
+        
+        manualMoveTmp = ManualMove
+        'reset this to zero so it only runs once      
+        manualMove = 0
+        moveToDepth(startDepth+manualMoveTmp)
+
+        'Set controller pointer to zero at current position
+        resetPointerPos(startDepth)
+        'Re-sample YSI so we know what it thinks the depth is 
+        ' (and we don't have to wait until next execution)
+        SDI12Recorder (ysi,1,9,"M!",1.0,0)
+        
+      EndIf
+    EndIf'End move if statement
+
+    CallTable OneMin
+    lastCorrection = 0 'reset correction to zero after sampling
+    
+  NextScan
+EndProg
+
+
