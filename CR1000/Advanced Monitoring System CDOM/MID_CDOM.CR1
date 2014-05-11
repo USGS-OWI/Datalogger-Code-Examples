@@ -1,0 +1,816 @@
+'Program name: D:\JFWLData\CR10Progs\Active\MID_ISCO.CR1
+'Date written: 7/12/2010
+'Updated 4/2/2013 to include new CO2 and CDOM probes and new rating/shifts
+'Transform Version: 0.5
+'Transform file: C:\Program Files\Campbellsci\LoggerNet\CR10X.TRN Version: 1.3
+'
+'This program was converted from D:\JFWLData\CR10Progs\Active\MID_ISCO.CSI
+'using Campbell Scientific's Transformer application.
+'
+'CRBasic angle units are in Radians by default.
+'Switch to Degrees as CR10 used Degrees.
+AngleDegrees
+'
+'{CR10X}
+'Program:  Middle site FLOW COMPOSITE SAMPLING using an
+'          ADAPS rating.
+'Flag Usage:
+'           FLAG1 - Sampler 1 control (Chemistry)
+'           FLAG2 - Sampler 2 control (Mercury)
+'           FLAG3 -
+'           FLAG4 - Heat tape control
+'           FLAG5 - Set high to reset samplers
+'           FLAG6 - Hg sampler completion status
+'           FLAG7 - Radio control
+'           FLAG8 - Chem sampler completion status
+'Control Port Usage:
+'           PORT1 - ISCO 1
+'           PORT2 - ISCO 2
+'           PORT3 - SDI H310 Stage sensor/YSI
+'           PORT4 - Heat tape
+'           PORT5 - Barometer control, CO2 power relay
+'           PORT6 - FDOM wiper
+'           PORT7 - Radio control
+'           PORT8 - Rain gage pulse count
+'Pulse Port Usage:
+'           P1 - Return Pulse for ISCO 1 - Resistor to GR
+'           P2 - Return Pulse for ISCO 2 - Resistor to GR
+'SUBROUTINES
+'   General
+'   LoadConstants: Load Constants for sampling and rating
+'   ShiftCompute: Compute shift
+'   DischargeCompute: Compute discharge via rating
+'   HeatTape: Heat tape control
+'   RadioControl: Radio control
+'   Sampling
+'   SampleMode: Check gage height and rainfall, start sampling mode if necessary
+'   AccumulateFlow: Increase counters, determine if sample should be taken
+'   IscoControl: Take a sample with appropriate sampler
+'   IscoReturnCheck: Determine if sampler responded
+'   IscoReset: Cancel sampling, zero counters
+
+'------------------------------Instrument Wiring----------------------------------------
+
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~Thermocouple
+'Blue: Signal out --> DE 4H
+'Red: Signal out --> DE 4L
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~CO2 - See Dornblaser email dated DD/MM/12 -Wiring color and
+'assignment and method (Diff vs se) must be confirmed as they vary among site
+'White: Signal out --> SE 1 H
+'Green: Signal Ground --> AG
+'Red: Power --> OPTO22:White
+'Black: Power Ground --> G
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~OPTO22 Relay Driver
+'
+' Red: Pin 1 --> +12V
+' White: Pin 2 --> CO2:Red
+' Green: Pin 3 --> C5
+' Black: Pin 4 --> G
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~Barometric pressure sensor CS106
+'the steel barb should have a dessicant plug
+
+'Blue: Signal out --> SE 3
+'Yellow: Signal Ground --> AG
+'Green: Trigger/Relay --> C5
+'Red: Power --> +12 V
+'Black: Power Ground --> G
+'Shield - Signal Ground --> AG or n/c
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~YSI
+'Black: Ground --> 1:Black --> G
+'Red: Power --> 1:Red --> +12V
+'Purple: SDI-12 --> 1:White --> C3
+'Clear: Shield --> 1:Green --> G
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~Turner C7 FDOM
+'Red: Power --> 2:Red --> SW12V
+'Black: Ground --> 2:Black --> G
+'White: Signal H --> 2: White --> DIFF3 H
+'Green: Signal L --> 2:Green --> DIFF3 L
+'Blue: 10X Gain --> 3:Green --> AG
+'Brown: 100X Gain --> n/c
+'Shield: --> n/c
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~Zebra Tech Single Wiper Trigger board
+'======Trigger board to CR1000
+
+'White: Trigger Pulse --> 3:White --> C6
+'Black: Ground --> 3:Black --> G
+'Red: Power --> 3:Red --> +12V
+
+'======Trigger Board to Wiper
+'MCIL Pin - Wiper board label [Pin description (label)] (cable color)
+' 5 - A  [Power and position sense GND (P -)] (Impulse/Subconn connector color: Blue/Org)
+' 4 - B [Motor position (PW)](Impulse/Subconn connector color: GRN/GRN)
+' 3 - C [Position sense (P +)](Impulse/Subconn connector color: RED/RED)
+' 2 - D [Motor GND]  (1)(Impulse/SUbconn connector color: WHT/WHT )
+' 1 - E [Motor +12V] (2)(Impulse/Subconn connector color: BLK/BLK)
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ISCO #1
+'White: Pin A Flow Pulse --> Relay 1 N.O.
+'Green: Pin C Power --> Relay 1 COM
+'Black: Pin B Ground--> Black --> G
+'Red: Pin D Bottle No --> Red --> P1
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ISCO #2
+'White: Pin A Flow Pulse --> Relay 2 N.O.
+'Green: Pin C Power --> Relay 2 COM
+'Black: Pin B Ground--> Green --> G
+'Red: Pin D Bottle No --> White --> P2
+
+'~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~Relay Driver
+'Black: Ground-->  G
+'Red: Power +12V --> +12V
+'White: Driver 1 --> C1
+'Green: Driver 2 --> C2
+'Blue: Driver 3 --> n/c
+'Brown: Driver 4 --> C4
+
+'\\\\\\\\\\\\\\\\\\\\\\\\\ DECLARATIONS /////////////////////////
+
+' Declare array of flags as the CR10 had.
+Public Flag(8) As Boolean
+Public OutputFlag15m,OutputFlag60m,OutputFlag1d,OutputFlag111
+Public i,i1,j
+Public h310(2)
+Public h310_mult(2)
+Public h310_offset(2)
+Public h310_ght
+Public h310_temp
+Public Ght,Cum_ppt,RefTemp,BattVolt,PptPulse,SmpReturn1,SmpReturn2,StrmTemp
+Public GhtShift, ght_tab(3),shift_tab(3),ShiftSlope,Discharge,PptSum,HydroVOL
+Public DmpWINDOW,HrWINDOW
+Public RadioCNTR,Flg7TIMER,FLG7THRES
+Public StnID_1,StnID_2
+Public TurnOFF,TurnON
+Public SmpVOL_1,SmpVOL_2
+Public AccumVOL1,AccumVOL2,IncVolume
+Public RatStage(16),RatQ(16)
+Public RatOffset,Low_STG(5),Mid_Q,Rise,Run,DeltaSTG
+Public HeatTime,HeatWin
+Public SmpCheck1,SmpCheck2,SmpMode,SmpData
+Public Smp_1,Smp_2
+Public BotNo_1,BotNo_2
+Public MaxBot_1,MaxBot_2
+Public SmpCode_1,SmpCode_2
+Public YSIVal(16)
+Public BaseGht,LastGht,GhtChg,GhtChgTH,GhtCheck
+Public Cum_ppt_1
+Public Cum_ppt_2
+Public Cum_ppt_3
+Public Cum_ppt_4
+Public Cum_ppt_5
+Public Cum_ppt_6
+Public PptChg,PptChgTH
+Public Fgain,Tgain
+
+'FDOM C7 sensor variables
+Const Nwipes = 1 'try 1 wipe by default
+Const n = 30
+Const burst_ave = 20
+Const SampleClk = 500 'measurement delay period in milliseconds
+Const Sensor_warmup = 30 'sec
+Public FDOMflag As Boolean
+Public BadFDOMcnt
+Public FDOM_mV(n),FDOM_PPB(n),FDOM_mV_ave,FDOM_mV_med,,FDOM_mV_std,FDOM_PPB_ave,FDOM_PPB_med,FDOM_PPB_std
+Public FDOM_mV_sort(burst_ave),FDOM_PPB_sort(burst_ave)
+Const a0=17 'Sensor scaling factor: clean water offset const AT 10X ONLY
+Const a1=0.0469' FDOM sensor #1237 scaling factor multiplier to PPB QSE AT 10X ONLY
+Units FDOM_PPB_ave,FDOM_PPB_med,FDOM_PPB_std = PPB QSE
+Units  FDOM_mV(n),FDOM_mV_ave,FDOM_mV_med,FDOM_mV_std = millivolts
+
+'Barometer sensor variables
+'Baro should be set up in SHUTDOWN mode for code to be successful (default) - refer to manual
+
+Public AtmPressure(n),AtmPressure_avg,AtmPressure_std,AtmPressure_med,BadBaroCnt
+Public Baroflag As Boolean
+Units AtmPressure_avg = mbar
+
+' CO2 Sensor Variables
+Const co2_burst_ave=30
+Public CO2_V(co2_burst_ave),CO2_ppm(co2_burst_ave),CO2_ppm_avg,CO2_ppm_std,CO2_ppm_med,BadCO2Cnt
+Public CO2flag As Boolean
+Units CO2_ppm_avg= ppm
+
+' Sensor Channels
+Const CO2Chan = 1 'SE chan 1 , red signal out wire=H, white signal reference/ground wire= ---|||
+'Const StreamTempChan = 2 ' SE chan 2
+Const StreamTempChan = 4 ' DE chan 4
+Const BaroChan = 3 'SE chan 3
+Const FdomChan = 3 'DE chan 3
+Const YSI_address = 1
+Const H310_address = 0
+
+'  Sensor control ports
+Const RainGagePort = 18 'Control port 8 as pulse counter
+Const BaroCtlPort = 5 'Control port 5
+Const CO2CtlPort = 5 'Control port 5 - controls 3A SSR
+Const H310CtlPort = 3
+Const HeatCtlPort = 4
+Const YSICtlPort = 3
+Const WiperCtlPort = 6 'Control port 6 'Active high pulse for >= 20mS to trigger Zebra Wiper board
+Const RadioCtlPort = 7
+
+' Measurement intervals
+Const Co2BaroInterval = 60 'min
+Const WipeInterval =15 'min
+Const OpticsInterval=15 'min
+Const YSIInterval=15 'min
+
+Alias Low_STG(2)=Low_Q
+Alias Low_STG(3)=High_STG
+Alias Low_STG(4)=High_Q
+Alias Low_STG(5)=Mid_STG
+Alias YSIVal(1)=YSITemp
+Alias YSIVal(2)=YSISpCond
+Alias YSIVal(3)=YSIDepth
+Alias YSIVal(4)=YSIpH
+Alias YSIVal(5)=YSIORP
+Alias YSIVal(6)=YSITurbidity
+Alias YSIVal(7)=YSIDOsat
+Alias YSIVal(8)=YSIDO
+Alias YSIVal(9)=YSIBatt
+
+'\\\\\\\\\\\\\\\\\\\\\\\\ OUTPUT SECTION ////////////////////////
+
+DataTable(Table150,OutputFlag15m,-1)
+  Sample(1, YSITemp, FP2)
+  Sample(1, YSISpCond, FP2)
+  Sample(1, YSIDepth, FP2)
+  Sample(1, YSIpH, FP2)
+  Sample(1, YSIORP, FP2)
+  Sample(1, YSIDOsat, FP2)
+  Sample(1, YSIDO, FP2)
+  Sample(1, YSIBatt, FP2)
+  Sample(1, FDOM_mV_ave, FP2)
+  Sample(1, YSITurbidity, FP2)
+EndTable
+DataTable(Table100,OutputFlag15m,-1)
+  Sample(1, h310_ght, FP2)
+  Sample(1, Cum_ppt, FP2)
+  Sample(1, Discharge, FP2)
+  Sample(1, RefTemp, FP2)
+  Sample(1, StrmTemp, FP2)
+EndTable
+DataTable(Table111,OutputFlag111,-1)
+  Sample(1, h310_ght, FP2)
+  Sample(1, Cum_ppt, FP2)
+  Sample(1, Discharge, FP2)
+  Sample(1, HydroVOL, FP2)
+  Sample(1, BotNo_1, FP2)
+  Sample(1, SmpCode_1, FP2)
+  Sample(1, BotNo_2, FP2)
+  Sample(1, SmpCode_2, FP2)
+EndTable
+DataTable(Table200,OutputFlag1d,-1)
+  Sample(1, StnID_1, FP2)
+  Sample(1, StnID_2, FP2)
+  Sample(1, BattVolt, FP2)
+EndTable
+DataTable (Co2BaroData,OutputFlag60m,-1)
+  DataInterval (0,Co2BaroInterval,Min,10)                'column number
+  Sample (1,CO2_ppm_avg,IEEE4)
+  Sample (1,CO2_ppm_med,IEEE4)
+  Sample (1,CO2_ppm_std,IEEE4)
+  Sample (1,BadCO2Cnt,FP2)
+  Sample (1,AtmPressure_avg,IEEE4)
+  Sample (1,AtmPressure_med,IEEE4)
+  Sample (1,AtmPressure_std,IEEE4)
+  Sample (1,BadBaroCnt,FP2)
+EndTable
+
+DataTable (FdomData,OutputFlag15m,-1)
+  DataInterval (0,OpticsInterval,Min,10)                'column number
+  Minimum (1,BattVolt,FP2,0,false)        '1
+  Maximum (1,RefTemp,FP2,0,false)           '2
+  Sample (1,FDOM_mV_ave,IEEE4)            '5
+  Sample (1,FDOM_mV_med,IEEE4)            '6
+  Sample (1,FDOM_mV_std,IEEE4)            '7
+  Sample (1,FDOM_PPB_ave,IEEE4)           '8
+  Sample (1,FDOM_PPB_med,IEEE4)           '9
+  Sample (1,FDOM_PPB_std,IEEE4)           '10
+  Sample (1,Fgain,FP2)                    '11
+  Sample (1,BadFDOMcnt,FP2)               '12
+EndTable
+
+'\\\\\\\\\\\\\\\\\\\\\\\\\ SUBROUTINES //////////////////////////
+
+Sub YSIMeasure
+  SDI12Recorder(YSIVal,YSICtlPort,YSI_address,"M!",1.00,0.00)
+EndSub
+
+' ******* CO2Measure Subroutine *******
+' Subroutine measures CO2 sensor (voltage) on Single-ended Channel 1.
+' Sw'd 12 Volts powers the sensor. Routine takes 45 measurements of
+' sensor w/1 second delay between each, applying a multiplier of 1.6871,
+' and an offset of -627.82 to the raw voltage measurements. Routine
+' then turns off Sw'd 12 Volts and computes the average of the
+' 45 readings.
+
+
+Sub SampleCO2andBaro'this code samples the vaisala CO2 sensor
+  'this sensor is currently only supported by Rob Striegl/Mark Dornblaser
+  'This code is not guaranteed to work as its not officially supported by the CAWSC
+  'The sensor must be 0-5000 mV,
+  'Sensor was calibrated in CO
+  PortSet(CO2CtlPort,1)'make sure its on
+  PortSet(BaroCtlPort,1)'enable baro
+  BadCO2Cnt=0
+  BadBaroCnt=0
+  '  Delay(0,1,sec)'should have already warmed up  but just in case
+  For i = 1 To n 'sample n times
+    VoltSe (CO2_V(i),1,mV5000,CO2Chan,True ,0,_60Hz,1.0,0)'0-1V
+    'uncommnt line below to convert to ppm directly using Marks code snippet
+    'VoltDiff (CO2_ppm(i),1,mV5000,CO2Chan,True ,0,_60Hz,1.6871,-627.82)'0-1V - This should be single ended, BUT Dornblaser insisted.
+    'OR convert using second equation so mv and ppm vars are retained for troubleshoting
+    CO2_ppm(i)= (CO2_V(i)*5.575)-43.2 'Dornblaser, pers. comm. email to JFW and Krista on 3/18/14 for Trout Lake
+
+    'flag data if bad
+    If CO2_ppm(i) <= 0 OR StrComp(CO2_ppm(i),"NAN") = 0 Then
+      BadCO2Cnt = BadCO2Cnt + 1
+    EndIf
+    'make baro measurements
+    VoltSe (AtmPressure(i),1,mV2500,BaroChan,False,200,250,.2,600)'from Clow,pers comm.~ 4-1-12
+    '   VoltSe (AtmPressure(i),1,mV2500,BaroPort,False,200,250,.24,500)'from CS106 manual
+    If AtmPressure(i) <= 600 OR StrComp(AtmPressure(i),"NAN") = 0 Then
+      BadBaroCnt = BadBaroCnt + 1
+      AtmPressure(i) = "NAN"
+    EndIf
+    Delay (0,SampleClk,mSec)'2 Hz
+  Next i
+
+  ' Now set the flags if any bad data (data<blank) was incorporated in the stats
+  If BadBaroCnt>0
+    Baroflag = True ' set flag high
+  Else
+    Baroflag = False
+  EndIf
+  If BadCO2Cnt>0
+    CO2flag = True ' set flag high
+  Else
+    CO2flag = False
+  EndIf
+
+  'stats
+  AvgSpa (AtmPressure_avg,n,AtmPressure())
+  StdDevSpa (AtmPressure_std,n,AtmPressure())
+  SortSpa (AtmPressure(),n,AtmPressure())
+  AtmPressure_med=(AtmPressure(n/2)+AtmPressure(n/2+1))/2
+
+  AvgSpa(CO2_ppm_avg,co2_burst_ave,CO2_ppm())
+  StdDevSpa(CO2_ppm_std,co2_burst_ave,CO2_ppm())
+  SortSpa(CO2_ppm(),co2_burst_ave,CO2_ppm())
+  CO2_ppm_med=(CO2_ppm(co2_burst_ave/2)+CO2_ppm(co2_burst_ave/2+1))/2
+
+  PortSet(BaroCtlPort,0)'disable baro
+  PortSet(CO2CtlPort,0)'turn off co2 and baro sensors
+
+EndSub
+
+Sub OpticalMeasurements
+  SW12(1)'On here to make sure
+  Delay(0,Sensor_warmup,Sec)
+  ' Initiate sample loop
+  ' n = number of burst samples (30 Sec @ 2 hz)
+  BadFDOMcnt = 0
+  For i = 1 To n 'initiate burst sample loop
+    VoltDiff (FDOM_mV(i),1,mV5000,FdomChan,1,0,250,1.0,0)'read FDOM port
+    Delay(0,SampleClk,mSec)'set burst sample initially to 1 Hz O/P rate
+    If FDOM_mV(i) < 0 Then
+      BadFDOMcnt = BadFDOMcnt + 1
+    EndIf
+'    FDOM_PPB(i)=(FDOM_mV(i)-17)*0.0447 'S/N 1237 based on cals from 2-5-13
+    FDOM_PPB(i)=(FDOM_mV(i)-22.4)*0.3924 'S/N xxxx GLRI loan 4/7/14
+    Fgain=10
+  Next i
+  SW12(0)'Off here to make sure
+  ' C7 FDOM - Statistics
+  AvgSpa (FDOM_mV_ave,burst_ave,FDOM_mV(burst_ave/2))'get burst ave FDOM
+  StdDevSpa (FDOM_mV_std,burst_ave,FDOM_mV(burst_ave/2))'get burst ave FDOM
+  SortSpa(FDOM_mV_sort(),burst_ave,FDOM_mV(burst_ave/2))
+  FDOM_mV_med=(FDOM_mV_sort(burst_ave/2)+FDOM_mV_sort(burst_ave/2+1))/2
+  AvgSpa (FDOM_PPB_ave,burst_ave,FDOM_PPB(burst_ave/2))'get burst ave FDOM
+  StdDevSpa (FDOM_PPB_std,burst_ave,FDOM_PPB(burst_ave/2))'get burst ave FDOM
+  SortSpa(FDOM_PPB_sort(),burst_ave,FDOM_PPB(burst_ave/2))
+  FDOM_PPB_med=(FDOM_PPB_sort(burst_ave/2)+FDOM_PPB_sort(burst_ave/2+1))/2
+  '  FDOM_PPB_med_S=(FDOM_PPB_sort(burst_ave)+FDOM_PPB_sort(burst_ave)+1)/2
+
+  ' Now set the flags if any bad data (data<blank) was incorporated in the stats
+  If BadFDOMcnt>0
+    FDOMflag = True ' set flag high
+  Else
+    FDOMflag = False
+  EndIf
+
+EndSub
+
+Sub ShiftCompute
+  If (Ght < ght_tab(1)) Then
+    GhtShift = shift_tab(1)
+  Else If (Ght < ght_tab(2)) Then
+    ShiftSlope = (shift_tab(2) - shift_tab(1))/(ght_tab(2) - ght_tab(1))
+    GhtShift = shift_tab(1) + ShiftSlope * (Ght - ght_tab(1))
+  Else If (Ght < ght_tab(3)) Then
+    ShiftSlope = (shift_tab(3) - shift_tab(2))/(ght_tab(3) - ght_tab(2))
+    GhtShift = shift_tab(2) + ShiftSlope * (Ght - ght_tab(2))
+  Else
+    GhtShift = shift_tab(3)
+  EndIf
+EndSub
+
+Sub DischargeCompute
+  Mid_STG = Ght + GhtShift
+  'Loop through the stage and discharge values using
+  'a loop index of 2 which will compare STAGE values to the
+  'Mid_STG.
+  For i1 = 1 To 16
+    'P90 Step loop index
+    If (Mid_STG >= RatStage(i1)) Then
+      Low_STG = RatStage(i1)
+      Low_Q = RatQ(i1)
+      High_STG = RatStage(i1+1)
+      High_Q = RatQ(i1+1)
+      'Exit the loop when the proper values used for discharge
+      'computation are determined.
+      ExitFor
+      ' (If Stage>STAGE#1)
+    EndIf
+    ' (Loop)
+  Next i1
+  'Use the values selected in the loop above for the
+  'discharge computation. Apply the OFFSET value to
+  'High_STG, Low_STG and Mid_STG values.
+  Low_STG = Low_STG - RatOffset
+  High_STG = High_STG - RatOffset
+  Mid_STG = Mid_STG - RatOffset
+  'Take the natural log of the (stage-offset)
+  'values and the discharge values so that they can
+  'be used in the discharge equation.
+  For i1 = 1 To 5
+    Low_STG(i1) = LOG(Low_STG(i1))
+    ' (loop)
+  Next i1
+  'Compute the slope (rise/run) of the line and the DeltaSTG change from
+  'the Low_STG to the Mid__STG value.
+  Rise = High_Q - Low_Q
+  Run = High_STG - Low_STG
+  DeltaSTG = Mid_STG - Low_STG
+  'Compute the discharge value for the given Mid__STG.
+  Mid_Q = Rise * DeltaSTG
+  Mid_Q = Mid_Q / Run
+  Mid_Q = Low_Q + Mid_Q
+  'Convert the Mid_Q to a discharge value.
+  Discharge = EXP(Mid_Q)
+EndSub
+
+Sub HeatTape
+  If  Flag(4) = True Then
+    HeatTime = HeatTime + 1
+    HeatWin = HeatWin + 1
+    If (HeatTime < 5) Then
+      PortSet(4, 1)
+    EndIf
+    If (HeatWin >= 15) Then
+      PortSet(4, 0)
+      Flag(4) = False
+      HeatTime = 0
+      HeatWin = 0
+    EndIf
+  Else
+    If (RefTemp < 0) Then      Flag(4) = True
+  EndIf
+EndSub
+
+Sub SampleMode
+  GhtCheck = 0
+  If  Flag(6) = True Then
+    GhtCheck = GhtCheck + 1
+  EndIf
+  If  Flag(8) = True Then
+    GhtCheck = GhtCheck + 1
+  EndIf
+  If (SmpMode >= TurnON) Then
+    GhtCheck = GhtCheck + 1
+  EndIf
+  If (GhtCheck = 0) Then
+    Cum_ppt_6 = Cum_ppt_5
+    Cum_ppt_5 = Cum_ppt_4
+    Cum_ppt_4 = Cum_ppt_3
+    Cum_ppt_3 = Cum_ppt_2
+    Cum_ppt_2 = Cum_ppt_1
+    Cum_ppt_1 = Cum_ppt
+    GhtChg = Ght - BaseGht
+    PptChg = Cum_ppt - Cum_ppt_6
+    If (GhtChg >= GhtChgTH) Then
+      If (PptChg >= PptChgTH) Then
+        SmpMode = TurnON
+        Flag(1) = True
+        AccumVOL1 = SmpVOL_1 * 1
+        Flag(2) = True
+        AccumVOL2 = SmpVOL_2 * 1
+      EndIf
+    EndIf
+  EndIf
+  If (SmpMode = TurnOFF) Then
+    If (Ght < LastGht) Then
+      BaseGht = Ght
+    EndIf
+  EndIf
+  LastGht = Ght
+EndSub
+
+Sub AccumulateFlow
+  SmpMode = TurnOFF
+  If  Flag(1) = True Then
+    SmpMode = TurnON
+  EndIf
+  If  Flag(2) = True Then
+    SmpMode = TurnON
+  EndIf
+  If (SmpMode >= TurnON) Then
+    IncVolume = Discharge * 0.0167
+    AccumVOL1 = AccumVOL1 + IncVolume
+    If  Flag(2) = True Then
+      AccumVOL2 = AccumVOL2 + IncVolume
+    EndIf
+    HydroVOL = HydroVOL + IncVolume
+  EndIf
+EndSub
+
+Sub IscoControl
+  If  Flag(1) = True Then
+    If (AccumVOL1 >= SmpVOL_1) Then
+      If (BotNo_1 < MaxBot_1) Then
+        PortSet(1, 1)
+        Delay(0,2000,MSEC)
+        PortSet(1, 0)
+        SmpCheck1 = TurnON
+        AccumVOL1 = AccumVOL1 - SmpVOL_1
+      Else
+        Flag(1) = False
+      EndIf
+    EndIf
+  EndIf
+  If  Flag(2) = True Then
+    If (AccumVOL2 >= SmpVOL_2) Then
+      If (BotNo_2 < MaxBot_2) Then
+        PortSet(2, 1)
+        Delay(0,2000,MSEC)
+        PortSet(2, 0)
+        SmpCheck1 = TurnON
+        AccumVOL2 = AccumVOL2 - SmpVOL_2
+      Else
+        Flag(2) = False
+      EndIf
+    EndIf
+  EndIf
+EndSub
+
+Sub IscoReturnCheck
+  SmpCode_1 = 0
+  If (SmpCheck1 >= TurnON) Then
+    SmpCheck1 = TurnOFF
+    If (SmpReturn1 >= TurnON) Then
+      BotNo_1=SmpReturn1
+      Smp_1 = Smp_1 + 1
+      SmpCode_1 = Smp_1
+    Else
+      SmpCode_1 = 901
+    EndIf
+  EndIf
+  SmpData = TurnON
+  If (SmpCheck2 >= TurnON) Then
+    SmpCheck2 = TurnOFF
+    If (SmpReturn2 >= TurnON) Then
+      BotNo_2=SmpReturn2
+      Smp_2 = Smp_2 + 1
+      SmpCode_2 = Smp_2
+    Else
+      SmpCode_2 = 901
+    EndIf
+    SmpData = TurnON
+  EndIf
+  SmpReturn1 = TurnOFF
+  SmpReturn2 = TurnOFF
+EndSub
+
+Sub IscoReset
+  AccumVOL1 = 0
+  AccumVOL2 = 0
+  HydroVOL = 0
+  SmpMode = TurnOFF
+  Flag(1) = False
+  Flag(2) = False
+  Flag(8) = False
+  BotNo_1 = 0
+  BotNo_2 = 0
+  Flag(5) = False
+EndSub
+
+Sub RadioControl
+  'Set the values for Flg7THRES, turn radio on (if not already set).
+  If (FLG7THRES = 0) Then
+    FLG7THRES = 60 'min
+    Flag(7) = True
+  EndIf
+  'Set the DmpWINDOW for the primary dump--xx21 to xx42.
+  If  TimeIntoInterval(21,60,Min) Then
+    DmpWINDOW = TurnON
+  EndIf
+  If  TimeIntoInterval(42,60,Min) Then
+    DmpWINDOW = TurnOFF
+  EndIf
+  'Determine if the radio should be on for either the dump or hour
+  'window.
+  RadioCNTR = TurnOFF
+  If (DmpWINDOW >= TurnON) Then
+    RadioCNTR = TurnON
+  EndIf
+  If (HrWINDOW >= TurnON) Then
+    RadioCNTR = TurnON
+  EndIf
+  'Flag 7 is set manually by the user. Turn on the radio if FLAG7
+  'is high. This allows the program to be downloaded using the radio.
+  If  Flag(7) = True Then
+    RadioCNTR = TurnON
+    If  TimeIntoInterval(0,1,Min) Then
+      Flg7TIMER = Flg7TIMER + 1
+    EndIf
+  Else
+    Flg7TIMER = 0
+  EndIf
+  If (Flg7TIMER >= FLG7THRES) Then Flag(7) = False
+  'If RadioCNTR is Turned on, then set port 7 low to turn on radio.
+  If (RadioCNTR >= TurnON) Then PortSet(7, 0)
+  If (RadioCNTR = TurnOFF) Then PortSet(7, 1)
+EndSub
+
+Sub LoadConstants
+  If (Smp_1 < 1000) Then
+    StnID_1 = 535
+    StnID_2 = 7206
+    TurnOFF = 0
+    TurnON = 1
+    SmpVOL_1 = 20
+    SmpVOL_2 = 5
+    Smp_1 = 1000
+    MaxBot_1 = 24
+    Smp_2 = 2000
+    MaxBot_2 = 20
+    h310_mult(1)=2.3073
+    h310_mult(2)=1
+    h310_offset(1)=-0.52
+    h310_offset(2)=0.00
+
+    ' Shift table, vriable shift
+    ' Updated 3/26/2014 @ 09:58:00
+    ght_tab(1)=0.00
+    shift_tab(1)=0.04
+    ght_tab(2)=1.0
+    shift_tab(2)=0.04
+    ght_tab(3)=2.0
+    shift_tab(3)=0.0
+
+    ' Sampling thresholds
+    GhtChgTH = 0.019
+    PptChgTH = 0.25
+
+    ' Enter the Stage and discharge points for the Rating curve
+    ' Stage#1  ********* Lowest stage on rating table *********
+    ' Q#1      ****** Lowest discharge on rating table ********
+    ' Rating 4.0, Created 6/26/2013 @ 15:00:37 CDT
+    '             Updated 10/29/2013 @ 13:45:02 CDT
+    RatOffset = 0.1
+    RatStage(1) = 0.12
+    RatQ(1) = 0.02
+    RatStage(2) = 0.20
+    RatQ(2) = 0.3
+    RatStage(3) = 0.39
+    RatQ(3) = 2.0
+    RatStage(4) = 0.67
+    RatQ(4) = 6.6
+    RatStage(5) = 0.72
+    RatQ(5) = 7.4
+    RatStage(6) = 0.8
+    RatQ(6) = 8.8
+    RatStage(7) = 0.9
+    RatQ(7) = 10.5
+    RatStage(8) = 1.03
+    RatQ(8) = 12.9
+    RatStage(9) = 1.25
+    RatQ(9) = 17.4
+    RatStage(10) = 1.58
+    RatQ(10) = 26.1
+    RatStage(11) = 1.77
+    RatQ(11) = 34.1
+    RatStage(12) = 1.95
+    RatQ(12) = 43.2
+    RatStage(13) = 2.35
+    RatQ(13) = 71.7
+    RatStage(14) = 99
+    RatQ(14) = 9999
+    RatStage(15) = 99
+    RatQ(15) = 9999
+    RatStage(16) = 99
+    RatQ(16) = 9999
+  EndIf
+  ShiftCompute
+  DischargeCompute
+EndSub
+
+'\\\\\\\\\\\\\\\\\\\\\\\\\\\ PROGRAM ////////////////////////////
+
+BeginProg
+
+  Scan(60,Sec, 3, 0)
+    ' Radio control
+    RadioControl
+    ' Heat tape control
+    If (SmpMode >= TurnON) Then HeatTape
+    SDI12Recorder(h310, H310CtlPort, "0", "M!", 1, 0)
+    If  TimeIntoInterval(13,15,Min) Then YSIMeasure
+    PulseCount(PptPulse, 1, RainGagePort, 2, 0, 0.01, 0)
+    PptSum = PptPulse + PptSum
+    Cum_ppt = PptSum
+    PanelTemp (RefTemp,_60Hz)
+    TCDiff (StrmTemp,1,mV25C,StreamTempChan,TypeT,RefTemp,False ,0,_60Hz,1.0,0)
+    '   TCSe(StrmTemp,1,mV25C,StreamTempChan,TypeT,RefTemp,False,0,_60Hz,1,0)
+    Battery(BattVolt)
+    PulseCount(SmpReturn1, 1, 1, 0, 0, 1, 0)
+    PulseCount(SmpReturn2, 1, 2, 0, 0, 1, 0)
+    h310_ght=h310(1)*h310_mult(1)+h310_offset(1)
+    Ght=h310_ght
+    h310_temp=h310(2)*h310_mult(2)+h310_offset(2)
+    ' Wipe every WipeInterval minutes
+    If BattVolt>11 'Low batt safeguard
+      If TimeIntoInterval(0,WipeInterval,min)
+        For j=1 To Nwipes
+          PortSet(WiperCtlPort,1) 'Activate wiper
+          Delay(0,50,mSec)
+          PortSet(WiperCtlPort,0)'Wiper delay falls into Gain switch delay and warmup delay,
+          If j>1
+            Delay(0,10,Sec) 'Activate if nwipes is >1 to give wiper time to reset and park before wiping again
+          EndIf
+        Next j
+      EndIf
+    EndIf
+    If  TimeIntoInterval(40,60,min) Then
+      PortSet(CO2CtlPort,1) 'turn on co2 20 min before the top of the hour
+    EndIf
+    If  TimeIntoInterval(0,Co2BaroInterval,min) Then
+      PortSet(BaroCtlPort,1)'enable baro
+      Delay(0,2,Sec)'Delay for CS106 warmup (>/1 sec, see 106 manual)
+      SampleCO2andBaro  'Call CO2 sensor subroutine to measure CO2
+      PortSet (BaroCtlPort,0)  'Disable barometric pressure sensor off
+      PortSet (CO2CtlPort,0)  'Turn CO2 sensor off
+    EndIf
+    If  TimeIntoInterval(0,OpticsInterval,min) Then
+      'Measure FDOM
+      OpticalMeasurements
+    EndIf
+    ' Load constants (if needed), compute discharge
+    LoadConstants
+    ' Check sampler flags, increment volume if needed
+    AccumulateFlow
+    ' Get return pulse if sample(s) were taken
+    If (SmpCheck1 >= TurnON) Then
+      OutputFlag111 = true
+      CallTable Table111
+      OutputFlag111 = false
+      IscoReturnCheck
+    Else
+      If (SmpCheck2 >= TurnON) Then IscoReturnCheck
+    EndIf
+    ' Take samples if necessary
+    If (SmpMode >= TurnON) Then IscoControl
+    ' Cancel sampling if Flag 5 is high
+    If  Flag(5) = True Then IscoReset
+    ' Output processing
+    If  TimeIntoInterval(0,15,Min) Then
+      ' Check gage height and rainfall, enter sampling mode if necessary
+      SampleMode
+      OutputFlag15m = true
+      CallTable Table100
+      CallTable Table150
+      CallTable FdomData
+      OutputFlag15m = false
+    EndIf
+    If  TimeIntoInterval(0,60,Min) Then
+      OutputFlag60m=true
+      CallTable Co2BaroData
+      OutputFlag60m = false
+    EndIf
+    If (SmpData >= TurnON) Then
+      OutputFlag111 = true
+      SmpData = TurnOFF
+    EndIf
+    If  TimeIntoInterval(0,1440,Min) Then
+      OutputFlag1d=true
+      CallTable Table200
+      OutputFlag1d=false
+    EndIf
+  NextScan
+EndProg
