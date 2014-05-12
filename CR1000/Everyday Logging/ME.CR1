@@ -1,0 +1,303 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date: 2011-04-01
+'program author: Jonathan Thom <jthom@ssec.wisc.edu>, Luke Winslow <lawinslow@gmail.com>
+' connections
+'  c1: temperature profile
+'  c1: Dopto
+'  c3: met sensor tx (out1 on compass/serial interface)
+'  c4: met sensor rx (out2 on compass/serial interface)
+'  c5: chlor/phyco blue
+'  c6: chlor/phyco brown
+'  c8: wiper
+' Diff1: chlor white(H) green (L)
+' diff2: phyco white(H) green (L)
+' sw12V: chlor/phyco
+'
+' met sensor: 
+' red : 12V
+' black : G
+' green : C3
+' white : C4
+' blue :  G
+' yellow :  NC
+'
+' Dopto:
+'   red: 12V
+'   black : G
+'   green : C1
+' 
+' Temp profile
+'   red: 12V
+'   black: G
+'   green : C1
+' 
+' wipers:
+' red : 12V
+' black : G
+' blue : c8
+'
+' chlor:
+' red : sw12v
+' black : G
+' white : 1H
+' green : 1L
+' blue : C5
+' brown : C6
+'
+' phyco: 
+' red: sw12V
+' black: G
+' white: 2H
+' green: 2L
+' blue : C5
+' brown : C6
+'
+' SI-111
+' red :  4H
+' black : 4L
+' clear : AG
+' green : SE6
+' blue : AG
+' white : vx1
+'
+' enclosure humidity
+' black: 5V
+' white: SE9
+' clear: G
+'
+'Declare Public Variables
+' rs232(1) = wind speed (raw count)
+' rs232(2) = wind direction * 10
+' rs232(3) = relative humidity counts (0-4000 => 0-100%)
+' rs232(4) = air temp counts (0-4000 => -50C to +50C)
+' rs232(5) = wind speed counts
+' rs232(6) = wind direction counts (output of sonic set to 0-540)
+' rs232(7) = compass direction * 10
+' rs232(8) = wind direction * 10 uncorrected by compasss
+'Example:
+Public PTemp, batt_volt,enc_hum
+Public serret1
+Public youngdata As String * 50
+Public rs232(8)
+Public windsp,winddir,airtemp,relhum,compass,ucwinddir,windspcount,winddircount
+Public run_windsp, maxgust(24),gust(2)
+Public SBTempC, SBTempK, TargmV, m, b, TargTempK, TargTempC
+' limnological meaurements
+Public watertemp(23),dopto(3),chlor, phyco
+Dim CRLF As String, CR As String
+Dim younggo As String
+Public gustcount
+Public elapsed(5)
+Public airTL,rhL,wsL,wdL,IRTL
+Public programversion
+
+Alias dopto(1) = doptotemp
+Alias dopto(2) = doptosat
+Alias dopto(3) = doptoppm
+
+Units PTemp = degC
+Units batt_volt = volts
+Units windsp = ms-1
+Units winddir = degrees
+Units airtemp = degC
+Units relhum = %
+Units compass = degrees
+Units ucwinddir = degrees
+Units run_windsp = ms-1
+Units watertemp = degC
+Units doptotemp = degC
+Units doptosat = %
+Units doptoppm = ppm
+Units chlor = microgram/L
+Units phyco = cells/mL
+Units airTL= degC
+Units rhL = %
+Units wsL = ms-1
+Units wdL = degrees
+Units IRTL = degC
+Units SBTempC = degC
+Units TargTempC = degC
+Units TargmV = millivolts
+'Declare Other Variables
+'Example:
+'Dim Counter
+
+'Declare Constants
+'Example:
+'CONST PI = 3.141592654
+'SI-111 calibration coefficients serial number 3596
+Const mC2 = 70980.8
+Const mC1 = 7681760
+Const mC0 = 1401780000
+Const bC2 = 6852.26
+Const bC1 = 339785
+Const bC0 = -7640530
+
+'Define Data Tables
+DataTable (system,1,-1)
+  DataInterval (0,5,Sec,10)
+  Sample(1,status.OSSignature,uint2)
+  Sample(1,programversion,UINT2)
+  Sample(1, batt_volt,FP2)
+  Sample (1,PTemp,FP2)
+  Sample(1,enc_hum,fp2)
+  Sample(1,windspcount,ieee4)
+  Sample(1,winddircount,ieee4)
+ ' Sample(5,elapsed(),uint2)
+EndTable
+' store met data every five seconds
+DataTable (metdata,1,-1)
+  DataInterval (0,5,Sec,10)
+  Sample(1,status.OSSignature,uint2)
+  Sample(1,programversion,UINT2)
+  Sample(1,windsp,fp2)
+  Sample(1, winddir,fp2)
+  Sample(1, airtemp,fp2)
+  Sample(1,relhum,fp2)
+  Sample(1,compass, fp2)
+  Sample(1,ucwinddir,fp2)
+  Sample(1,run_windsp,fp2)
+  Sample(1,gust(1),fp2)
+  Sample(1,TargmV,fp2)
+  Sample(1,SBTempC,fp2)
+  Sample(1,TargTempC,fp2)
+EndTable
+'DataTable (metdatatwomin,1,-1)
+'  DataInterval (0,120,sec,10)
+'  Sample(1,status.OSSignature,uint2)
+'  Sample(1,programversion,UINT2)
+'  Maximum(1,airtemp,FP2,False,False)
+'  Minimum(1,airtemp,FP2,False,false)
+'  Maximum(1,windsp,FP2,False,false)
+'  SampleMaxMin(1,winddir,fp2,False)
+'  Minimum(1,windsp,fp2,False,false)
+'  SampleMaxMin(1,winddir,fp2,False)
+'  FieldNames("winddirMin:")
+'  WindVector(1,windsp,winddir,FP2,False,0,0,2)
+'EndTable
+DataTable (limnodata,1,-1)
+  DataInterval(0,60,sec,10)
+  Sample(1,status.OSSignature,uint2)
+  Sample(1,programversion,UINT2)
+  Sample(23,watertemp(),fp2)
+  Sample(3,dopto(),fp2)
+  Sample(1, chlor, fp2)
+  Sample(1,phyco,fp2)
+  Sample(1,airTL,fp2,)
+  Sample(1,rhL,fp2)
+  Sample(1,wsL,fp2)
+  Sample(1,wdL,fp2)
+  Sample(1,IRTL,fp2)
+EndTable
+
+'Main Program
+BeginProg
+  programversion = 1
+  CRLF=CHR(13)+CHR(10)
+  CR=CHR(13)
+  younggo=CHR(77) + CHR(65) + CHR(33)  ' MA!
+' initialize the gust counter
+  gustcount = 1
+  SerialOpen (COM2,1200,0,0,50)
+  Scan (5,Sec,0,0)
+ '   SerialOpen (COM2,1200,0,0,50)
+    SemaphoreGet(1)
+    PanelTemp (PTemp,250)
+    Battery (batt_volt)
+        ' measure skin temperature
+    Therm109(SBTempC,1,6,1,0,250,1.0,0)
+    VoltDiff (TargmV,1,mV2_5,4,True ,0,250,1.0,0)
+    m = mC2 * SBTempC^2 + mC1 * SBTempC + mC0
+    b = bC2 * SBTempC^2 + bC1 * SBTempC + bC0
+    
+    SBTempK = SBTempC + 273.15
+    TargTempK = ((SBTempK^4) + m * TargmV + b)^0.25
+    TargTempC = TargTempK - 273.15
+    
+    VoltSe(enc_hum,1,mv2500,9,1,0,250,0.1,0)
+    serret1= SerialOut(COM2,younggo,"",0,50)
+    SerialIn(youngdata,com2,100,CR,42)
+    SerialFlush(com2)
+  '  SerialClose(com2)
+    SplitStr(rs232(1),youngdata," ",8,0)
+    windsp = rs232(1) * 0.04903
+    AvgRun(run_windsp,1,windsp,24)
+    winddir = rs232(2) * 0.1
+    relhum = rs232(3) * 0.025
+    airtemp = (rs232(4) * 0.025) - 50.
+    SemaphoreRelease(1)
+    windspcount = rs232(5)
+    winddircount = rs232(6)
+    compass = rs232(7) * 0.1
+    ucwinddir = rs232(8) * 0.1
+    ' determine the maximum wind speed in the previous 2 minutes (5 seconds * 24 = 120 seconds)
+    maxgust(gustcount) = windsp
+    If gustcount < 24 Then
+      gustcount = gustcount + 1
+    Else
+      gustcount = 1
+    EndIf
+    MaxSpa(gust,24,maxgust)
+
+    
+    'Enter other measurement instructions
+    'Call Output Tables
+    'Example:
+    CallTable metdata
+    CallTable system
+'    CallTable metdatatwomin
+  NextScan
+  ' measure the limnological instruments in a slowsequence at 60 second interval
+  SlowSequence
+  ' c1: water temperature profile, Dopto
+  ' c5, c6: set gain for chlorophyll and phyco sensors
+  Scan(60,sec,0,0)
+    ' write the met variables to temp variables so that the observation matches the observation
+    ' time in the Limno file
+    airTL = airtemp  
+    rhL = relhum
+    wsL = windsp
+    wdL = winddir
+    IRTL = TargTempC
+    Timer(1,mSec,2)
+    ' measure the water temperature profile (1-9)
+    SDI12Recorder(watertemp(1),1,0,"M0!",1.0,0.0)
+    elapsed(1) = Timer(1,msec,4)
+    ' measure the water temperature profile (10-18)
+    SDI12Recorder(watertemp(10),1,0,"M1!",1.0,0.0)
+    elapsed(2) = Timer(1,msec,4)
+    '  turn on chloro and psycho sensors
+    SW12(1)
+     ' set chlorophyl and phyco gain to 10
+     PortSet(5,0)
+     PortSet(6,1)
+    ' measure the water temperature profile (19-23)
+    SDI12Recorder(watertemp(19),1,0,"M2!",1.0,0.0)
+    elapsed(3) = Timer(1,msec,4)
+    ' measure Dopto
+    SDI12Recorder(dopto(),1,1,"M!",1.0,0)
+    elapsed(4) = Timer(1,msec,4)
+    'Delay(0,5,sec)   ' I don't think this is necessary because there is a 5 second delay for Dopto
+    ' white diff 1 H
+    ' green diff 1 L
+    VoltDiff(chlor,1,Autorange, 1,true ,0 ,250, 10, 0)
+    ' white diff 2 H
+    ' green diff 2 L
+    VoltDiff(phyco,1, autorange,2, true,0,250,10,0)
+    SW12(0)
+    PortSet(6,0)
+    elapsed(5) = Timer(1,msec,4)
+    CallTable limnodata
+  NextScan
+  ' wipe the fluorometer once an hour
+  ' c8 is used for the wiper
+  SlowSequence
+  Scan(3600,sec,0,0)
+    PortSet(8,1)
+    Delay (0,1,Sec)
+    PortSet(8,0)
+  NextScan
+
+EndProg

@@ -1,0 +1,92 @@
+'CR1000 Series Datalogger
+'
+'program author: Luke Winslow 
+'2009-07-02 LAW - Created initial program
+'2009-07-24 LAW - Change sample rate to 1 minute
+
+
+'Declare Public Variables
+'Main Reading Variables
+Public dataloggerBatt, radioBatt, phyco, chloro, cdom, windSpd, airTemp, relHum, c3Temp As Float
+Public dopto As Float(3)
+Public tempLine As Float(10)
+
+
+'Temporarily used variables
+Public nBytes, buffBytes As Float
+
+'String coming in is normally 64 char long
+Public serialStuff As String * 80
+
+'Alias the dopto array
+Alias dopto(1) = doptoTemp
+Alias dopto(2) = doptoSat
+Alias dopto(3) = doptoPPM
+
+
+'Define Data Table
+DataTable (OneMinTable,1,-1)
+	DataInterval (0,1,Min,10)
+	Sample(1,dataloggerBatt,FP2)
+	Sample(1,radioBatt,FP2)
+	Sample(1,airTemp,IEEE4)
+	Sample(1,relHum,IEEE4)
+	Sample(1,windSpd,IEEE4)
+	Sample(10,tempLine,IEEE4)
+	Sample(1,doptoTemp,IEEE4)
+	Sample(1,doptoSat,IEEE4)
+	Sample(1,doptopPM,IEEE4)
+	Sample(1,phyco,IEEE4)
+	Sample(1,chloro,IEEE4)
+	Sample(1,cdom,IEEE4)
+	Sample(1,c3Temp,IEEE4)
+	
+EndTable
+
+
+'Main Program
+BeginProg
+  
+  'Open Serial Port so it can catch the C3 output
+  SerialOpen (ComRS232,9600,0,0,100)
+  
+	Scan (1,Min,0,0)
+	  
+		'Get battery voltages
+		Battery (dataloggerBatt)
+		VoltSe (radioBatt,1,AutoRange,1,False,0,250,.011,0)
+		
+		'Met Insturments
+		PulseCount (windSpd,1,1,1,1,.750,0.2)
+		VoltSe (airTemp,1,AutoRange,4,False,0,250,0.1,-40)
+		VoltSe (relHum,1,AutoRange,3,False,0,250,0.1,0)
+		
+		'Read from Turner C3 fluorometer
+		'Fluorometer writes data to serial without prompt every minute
+		'Pull fluorometry data from serial buffer
+		SerialInBlock (COMRS232,serialStuff,65)
+		SerialFlush (ComRS232)
+		
+		'Parse the string recieved from the fluorometer
+		Phyco = Trim(Mid(serialStuff,18,11))
+		Chloro = Trim(Mid(serialStuff,29,10))
+		CDOM = Trim(Mid(serialStuff,39,10))
+		c3Temp = Trim(Mid(SerialStuff,56,10))
+
+		
+		
+		'Read SDI insturments 
+		SDI12Recorder (dopto,7,1,"M!",1.0,0)
+		SDI12Recorder (tempLine,7,0,"M!",1.0,0)
+		SDI12Recorder (tempLine(10),7,0,"M1!",1.0,0)
+		
+		  
+
+			
+			
+		'Call Output Table
+		CallTable OneMinTable
+			
+	NextScan
+EndProg
+
