@@ -1,0 +1,380 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date: 2013-10-01
+'program author: Luke Winslow <lawinslow@gmail.com>
+SequentialMode
+
+'Declare Public Variables
+'Example:
+Public PTemp, batt_volt
+
+'Declare Other Variables
+'Example:
+'Dim Counter
+
+'Declare Constants
+'Example:
+'CONST PI = 3.141592654
+
+'Define Data Tables
+DataTable (dlStats,1,1000)
+  DataInterval (0,1,Min,10)
+  Minimum (1,batt_volt,FP2,0,False)
+  Sample (1,PTemp,FP2)
+  Sample (1, downloadedNumber,UINT4)
+EndTable
+
+DataTable (wakeupStr, 1, -1)
+  Sample(1,identStr,String)
+EndTable
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' A few temporary variables used for inductive modem communications
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Const CRLF As String = CHR(13) + CHR(10)
+Const CR As String = CHR(13)
+
+Public tmpStr As String * 12
+Public commOn = false
+Public receivingFile = false
+Public receivingFName As String * 12
+Public lineCaptured As Boolean
+Public lastError As String * 20
+Public nChar As Long
+
+Public downloadedNumber As Long
+Public forceNChar As Long
+Public forceInChar As String * 35
+Public FName As String * 13
+
+Public Headertemp As String * 53
+Public TempDump As String * 15
+ 
+Public byteCount As Long = 1 'Start with a >1 value. Just making sure sign bit is correct
+
+Public packetType As String * 3
+Public fid As Long
+Public recieveStatus As String * 50
+Public nByteInBuffer As Long = 0
+Public timeout As Long
+Public rTime(9) As Float
+
+Function logStr(logMessage As String * 50) 
+  Dim fid as Long = FileOpen("CRD:program_log.txt","a+",-1)
+  RealTime(rTime)
+  FileWrite (fid, rTime(1) + "-" + rTime(2) + "-" + rTime(3) + " " + rTime(4) + ":" + rTime(5) + ":" + rTime(6) + " - " + logMessage + CRLF,0)
+  FileClose(fid)
+EndFunction
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'This function checks if the profiler has initiated communications
+'Returns true if modem has received any bytes (bites! Haha!)
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Public identStr as String * 100
+Function isIdentReceived() As Boolean
+
+  'If nothing has been received, then it certainly hasn't
+  If SerialInChk(COMRS232) < 1 Then
+    Return false
+  EndIf
+
+  Delay (1,7000,mSec)
+  
+  SerialInBlock(COMRS232,identStr,100)
+
+  logStr("Detected Input:" + identStr)
+  
+  SerialFlush(ComRS232) 'We don't want this sitting around in the buffer
+  
+
+  If InStr (1,identStr,"@@@",2) <> 0 Then
+    logStr("Input contains @@@, continue...")
+    nChar = SerialOut(COMRS232, CRLF, "S>", 1, 200)
+    SerialFlush(ComRS232)
+    Delay(1,1, Sec)
+  
+    Return true  
+  Else
+    logStr("Could not find @@@, flush and ignore.") 
+    SerialFlush(ComRS232)
+    Return false
+  EndIf
+  
+  
+EndFunction
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Sends the capture line command.
+' Returns true on success
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Function captureLine() As Boolean
+
+  'Skip call if line is already captured
+  If lineCaptured Then
+    Return true
+  EndIf
+  
+  logStr("Forcing Capture Line...")
+  Delay(1,1, Sec)
+  'This should return 11 if the command was successful
+  forceNChar = SerialOut(COMRS232, "forcecaptureline" & CRLF, "",0,0)
+  Delay(1,1, Sec)
+  SerialIn (forceInChar,COMRS232,100,10,35)
+  
+  logStr("Returned from capture:" + forceInChar)
+  
+  If Len(forceInChar) > 0 Then
+    Delay(1, 1, Sec)
+    SerialFlush (COMRS232)
+    lastError = "captured line"
+    lineCaptured = true
+    Return true
+  Else
+    Delay(1, 1, Sec)
+    SerialFlush (COMRS232)
+    lastError = "forceNChar <> 11"
+    lineCaptured = false
+    Return false
+  EndIf
+
+EndFunction
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+' Turns off the modem
+' Returns true if modem indicated successful power-off
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+Public offStatus As String * 20
+Public offNChar As Long
+
+
+Function powerOff()As Boolean
+
+  'Don't try if we aren't in captured mode
+  If NOT lineCaptured Then
+    Return true
+  EndIf
+  
+  logStr("Sending REQEOF...")
+  offNChar = SerialOut(COMRS232, "#01REQEOF" & CRLF, ">>", 1, 1000)
+  
+  If offNChar = 2 Then
+    logStr("REQEOF Success")
+    offStatus = "REQEOF Success"
+  EndIf
+
+  Delay (1,1,Sec)
+  
+  'This should return 11 if the command was successful
+  If SerialOut(COMRS232, "PWROFF" & CRLF, "<Executed/>",1,500) > 0 Then 'Wait 5 seconds?
+    Delay (1,1,Sec)
+    SerialFlush (COMRS232)
+    offStatus = "PWROFF success"
+    lineCaptured = false
+    Return true
+  Else
+    Delay (1,1,Sec)
+    SerialFlush (COMRS232)
+    offStatus = "PWROFF No response"
+    lineCaptured = true
+    Return false 'We were unsuccessful
+  EndIf
+
+EndFunction
+
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Receives, parses, and checks a file packet
+'Handles ACK
+'Returns true if a file was downloaded
+'Returns false when there ENDOFDATA file header packet is sent
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+
+Public isCrcGood As Boolean
+Public crcCalc As String * 5
+Public crc As String * 5
+
+Function receiveFile() As Boolean
+  
+  SerialFlush(COMRS232)
+  logStr("Sending REQNEW")
+  recieveStatus = "Sending REQNEW"
+  SerialOut(COMRS232, "#01REQNEW" & CRLF, "<RemoteReply>",0,0)
+  Delay(1, 5, Sec)
+  
+  logStr("Starting receive")
+  recieveStatus = "Starting receive"
+  'SerialIn (TempDump,COMRS232,100,">",15)
+  SerialInBlock (COMRS232,TempDump,13)
+  SerialInBlock (COMRS232,Headertemp,51)
+  logStr("Response to REQNEW" + TempDump + Headertemp)
+  
+  Delay(1,1,Sec)
+  
+  MoveBytes (FName,0,Headertemp,0,12)
+  
+  If StrComp (Trim(FName), "ENDOFDAT.DAT") = 0 Then
+    recieveStatus = "All Files Downloaded"
+    Return(false)
+  EndIf
+  
+  If StrComp(TempDump, "<ERROR type='") = 0 Then
+    recieveStatus = "No response from profiler"
+    Return(false)
+  EndIf
+
+  Delay (1,1,Sec)
+  'Flush to start with a clean input buffer
+  SerialFlush (COMRS232)
+  
+  Delay(1, 2, Sec)
+  fid = FileOpen ("CRD:" & Trim(FName),"wb",-1)
+  recieveStatus = "Opened file"
+  logStr("Opened file:" + FName)
+  
+  isCrcGood = true  
+
+  'This loops until we've retrieved the full file
+  While true
+    
+    Delay(1,1,sec)
+    'Yes, we want the next packet
+    If isCrcGood Then
+      SerialOut (COMRS232,"#01REQACK" & CRLF, "<RemoteReply>", 1, 500)
+    Else
+      'Request a re-transmit
+      SerialOut (COMRS232,"#01REQNAK" & CRLF, "<RemoteReply>", 1, 500)
+    EndIf
+    
+    Delay(1,5,Sec)
+    
+    Dim TempPacket As Long(8)
+    
+    'Grab the header so we know how many bytes to wait for
+    SerialInBlock (COMRS232,TempPacket,8)
+    logStr("Header:" + TempPacket)
+    
+    MoveBytes (packetType, 0, TempPacket, 0, 3)
+    'CR1000 and profiler are both big endian
+    MoveBytes (byteCount,2,TempPacket, 4, 1)
+    MoveBytes (byteCount,3,TempPacket, 5, 1)
+    
+    MoveBytes(crc, 0, TempPacket, 6, 2)
+    
+    'Remove 8 header bytes from byteCount
+    byteCount = byteCount - 8
+    
+    If StrComp (Trim(packetType), "CRC") = 0 Then
+      recieveStatus = FName & " fully received"
+      logStr(recieveStatus)
+      
+      FileClose (fid)
+      Delay(1,2,Sec)
+      SerialFlush(COMRS232)
+      Return(true)
+    EndIf
+    
+    recieveStatus = "Sent Ack and getting binary data"
+
+    timeout = 1
+    nByteInBuffer = SerialInChk (COMRS232)
+    Dim lastN = 0
+    recieveStatus = "Waiting as packet transmits"
+    logStr("Waiting as packet transmits")
+    Do
+      Delay(1,1,Sec)
+      nByteInBuffer = SerialInChk (COMRS232)
+      
+      If timeout > 60 Then
+        recieveStatus = "Timeout reached"
+        ExitDo
+      Else
+        'Only add to timeout count if no new data was receieved
+        If lastN - nByteInBuffer = 0 Then
+          timeout = timeout + 1
+        EndIf
+      EndIf
+      lastN = nByteInBuffer
+      
+    Loop Until nByteInBuffer >= byteCount
+    
+    'TODO: something different if the last loop has timed out
+    
+    Dim inData As Long(1100)
+    SerialInBlock (COMRS232,inData,byteCount)
+    
+    'TODO: Figure out how to check the checksum and compare to verify receipt of packet. 
+    'crcCalc = CheckSum (inData,2, byteCount)
+    
+    logStr("Writing File Packet byte count:" + byteCount)
+    FileWrite(fid, inData, byteCount)
+    Delay(1,5,Sec)
+    
+    SerialFlush(COMRS232)
+    nByteInBuffer = SerialInChk (COMRS232)
+    
+  Wend
+
+EndFunction
+
+
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'This checks for the next available new file and returns the name
+' "" empty string if no new files available
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'
+'Function downloadNewFiles() As String
+'  
+'  
+'  downloadedNumber = 0
+'  While(receiveFile())
+'    downloadedNumber = downloadedNumber + 1
+'  Wend
+'
+'  Return downloadedNumber
+'
+'EndFunction
+'
+'Main Program
+BeginProg
+
+  'Largest data packet is 4096 bytes, <RemoteReply> and close included make 4123
+  ' Plus <Executed/> makes 4134 Plus one extra for good measure(I think)
+  SerialOpen (COMRS232,9600,3,0,4400)
+
+
+  Scan (30,sec,0,0)
+    PanelTemp (PTemp,250)
+    Battery (batt_volt)
+    
+    'Check if identification has been received
+    If isIdentReceived() Then
+      CallTable wakeupStr  
+      'Capture line and get files
+      If captureLine() Then
+        downloadedNumber = 0
+        While(receiveFile())
+          downloadedNumber = downloadedNumber + 1
+        Wend
+
+      EndIf
+    
+      powerOff()
+
+    EndIf
+
+
+    'Enter other measurement instructions
+    'Call Output Tables
+    'Example:
+    CallTable dlStats
+  NextScan
+EndProg
+
+
+
+
