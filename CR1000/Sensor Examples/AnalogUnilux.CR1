@@ -1,0 +1,57 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date:
+'program author:
+
+'Declare Public Variables
+'Example:
+Public PTemp, batt_volt, TRef, Phyco
+
+'Declare Other Variables
+'Example:
+'Dim Counter
+
+Units Phyco = ug/L
+Units batt_volt = V
+
+'Declare Constants
+
+'Define Data Tables
+DataTable (Onemin,1,1000)
+	DataInterval (0,1,Min,10)
+	Sample (1,Phyco,IEEE4)
+	Minimum (1,batt_volt,FP2,0,False)
+EndTable
+
+'Define Subroutines
+'Sub
+	'EnterSub instructions here
+'EndSub
+
+'Main Program
+BeginProg
+	Scan (1,Min,0,0)
+	
+		'The sensor is powered via 12V switched supply, turn on here
+		PortSet (9,1)
+		'Give the sensor 10 seconds to warm up, not sure what manufacturer recommends
+		Delay (0,10,Sec)
+		
+		Battery (Batt_volt)
+		
+		VoltSe (Phyco,1,AutoRange,9,False,0,250,0.02,0)
+		
+		'Turn sensor back off
+		PortSet (9,0)
+		'Using Zebra-tech wiper unit. Wipe once every hour
+		If(TimeIntoInterval (0,1,Hr))
+			PortSet (1 ,1 )
+			Delay (0,1,Sec)'1 sec might be overkill
+			PortSet (1 ,0)
+		EndIf
+		
+		CallTable Onemin
+	NextScan
+EndProg
+

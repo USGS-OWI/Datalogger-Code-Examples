@@ -1,0 +1,100 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date: 2011-07-08
+'program author: Luke Winslow <lawinslow@gmail.com>
+
+'Declare Public Variables
+
+Public battVolt, totalRad, PAR, Temperature, wndDir, wndSpd
+Public precip
+
+
+Units battVolt = Volts
+Units totalRad = W/m^2
+Units PAR = uMol/m^2/s
+Units temperature = C
+Units wndDir = deg
+Units wndSpd = m/s
+Units precip = mm
+
+
+'Declare Other Variables
+'Example:
+'Dim Counter
+
+'Declare Constants
+'Example:
+'CONST PI = 3.141592654	
+
+'Define Data Tables
+DataTable (oneMin,1,-1)
+	DataInterval (0,1,Min,10)
+	Sample(1,battVolt,IEEE4)
+	Sample(1,totalRad,IEEE4)
+	Sample(1,PAR,IEEE4)
+	Sample(1,temperature,IEEE4)
+	Sample(1,wndDir,IEEE4)
+	Sample(1,wndSpd,IEEE4)
+	Sample(1,precip,IEEE4)
+EndTable
+
+'Data table for one hour averages. I do not necessarily agree with doing this
+' in a research setting as it occludes the underlying data origin and any errors
+' that might crop up.
+DataTable (oneHour,1,-1)
+	DataInterval (0,1,Hr,10)
+	Average (1,battVolt,IEEE4,False)
+	Average (1,totalRad,IEEE4,False)
+	Average (1,PAR,IEEE4,False)
+	Average (1,Temperature,IEEE4,False)
+	Average (1,wndDir,IEEE4,False)
+	Average (1,wndSpd,IEEE4,False)
+	Average (1,precip,IEEE4,False)
+EndTable
+
+'Define Subroutines
+'Sub
+	'EnterSub instructions here
+'EndSub
+
+'The line below is 80 characters wide. It isn't a bad idea to keep each line
+' 80 or less characters long. Makes things easier to read usually.
+''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''''
+'Main Program
+BeginProg
+  'Execute every minute. Matches how often we want to store data
+	Scan (1,Min,0,0)
+	  'Measure the voltage being supplied to the datalogger. Good for station monitoring
+		Battery (BattVolt)
+		
+		'Measure Pyranometer connected to voltage input 1 with offset:0 and multiplier: 88.5
+		VoltSe (totalRad,1,AutorangeC,1,False,0,_50Hz,88.5,0)
+		
+		'Measure PAR
+		'Mult based on calibration factor supplied by LiCOR for the
+    'PAR sensor ser # Q31803.  The calib is 150.15 uE/ua
+    'Based on the use of a 900 ohm resistor this translates to a
+    'calibration factor of 166.83
+    VoltSe(PAR,1,AutorangeC,2,False,0,_50Hz,166.83,0)
+		
+		'Measure a campbell model 107 temp sensor
+		Therm107 (temperature,1,3,Vx1,0,250,1.0,0)
+		
+    'Measure wind direction. First excite the voltage output, then measure
+    BrHalf (wndDir,1,mV2500,4,Vx2,1,2500,True ,0,_60Hz,355,0)
+    
+    'Measure wind speed, connected to Pulse port 1
+		PulseCount (wndSpd,1,1 ,1,1,0.098,0)
+		
+		'Measure precipitation from a tipping bucket rain gauge
+		PulseCount (precip,1,2,2,0,.201,0)
+		
+		'Call the tables to record the data collected in this run of the program
+		CallTable oneMin
+    CallTable oneHour
+
+		
+	NextScan
+EndProg
+

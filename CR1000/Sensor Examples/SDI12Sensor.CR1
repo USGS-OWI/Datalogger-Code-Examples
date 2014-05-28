@@ -1,0 +1,45 @@
+'CR1000 Series Datalogger
+'To create a different opening program template, type in new
+'instructions and select Template | Save as Default Template
+'date: 2012-05-17
+'program author: Luke Winslow<lawinslow@gmail.com>
+
+'Declare Public Variables
+Public loggerVoltage As Float
+Public rdoData(4) As Float
+
+Alias rdoData(1) = doPPM
+Alias rdoData(2) = doTemp
+Alias rdoData(3) = doSat
+Alias rdoData(4) = doPPO2
+
+'Declare Constants
+'Example:
+CONST doSdiAddress = 1
+
+'Define Data Tables
+DataTable (OneMin,1,-1)
+	DataInterval (0,1,Min,10)
+	Sample (1,loggerVoltage,FP2)
+	Sample (1,doTemp,IEEE4)
+	Sample (1,doPPM,IEEE4)
+	Sample (1,doSat,IEEE4)
+EndTable
+
+
+'Main Program
+BeginProg
+	Scan (1,Min,0,0)
+		
+		Battery (loggerVoltage)
+		'Enter other measurement instructions
+		
+		SDI12Recorder (rdoData(),1,doSdiAddress,"M!",1.0,0)
+		
+		
+		'Call Output Tables
+		'Example:
+		CallTable OneMin
+	NextScan
+EndProg
+
